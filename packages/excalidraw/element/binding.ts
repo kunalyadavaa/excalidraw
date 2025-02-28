@@ -69,6 +69,7 @@ import {
   vectorCross,
   pointsEqual,
   lineSegmentIntersectionPoints,
+  round,
 } from "../../math";
 import { intersectElementWithLineSegment } from "./collision";
 import { distanceToBindableElement } from "./distance";
@@ -440,23 +441,10 @@ export const maybeBindLinearElement = (
   }
 };
 
-const normalizePointBinding = (
-  binding: { focus: number; gap: number },
-  hoveredElement: ExcalidrawBindableElement,
-) => {
-  let gap = binding.gap;
-  const maxGap = maxBindingGap(
-    hoveredElement,
-    hoveredElement.width,
-    hoveredElement.height,
-  );
-
-  if (gap > maxGap) {
-    gap = BINDING_HIGHLIGHT_THICKNESS + BINDING_HIGHLIGHT_OFFSET;
-  }
+const normalizePointBinding = (binding: { focus: number; gap: number }) => {
   return {
     ...binding,
-    gap,
+    gap: FIXED_BINDING_DISTANCE,
   };
 };
 
@@ -478,7 +466,6 @@ export const bindLinearElement = (
             linearElement,
             hoveredElement,
             startOrEnd,
-            elementsMap,
           ),
           focus: 0,
           gap: 0,
@@ -491,7 +478,6 @@ export const bindLinearElement = (
               startOrEnd,
               elementsMap,
             ),
-            hoveredElement,
           ),
         }),
   };
@@ -707,7 +693,7 @@ const calculateFocusAndGap = (
 
   return {
     focus: determineFocusDistance(hoveredElement, adjacentPoint, edgePoint),
-    gap: Math.max(1, distanceToBindableElement(hoveredElement, edgePoint)),
+    gap: FIXED_BINDING_DISTANCE,
   };
 };
 
@@ -725,7 +711,7 @@ export const updateBoundElements = (
     changedElements?: Map<string, OrderedExcalidrawElement>;
   },
 ) => {
-  const { newSize, simultaneouslyUpdated } = options ?? {};
+  const { simultaneouslyUpdated } = options ?? {};
   const simultaneouslyUpdatedElementIds = getSimultaneouslyUpdatedElementIds(
     simultaneouslyUpdated,
   );
@@ -744,22 +730,13 @@ export const updateBoundElements = (
       return;
     }
 
-    const bindings = {
-      startBinding: maybeCalculateNewGapWhenScaling(
-        changedElement,
-        element.startBinding,
-        newSize,
-      ),
-      endBinding: maybeCalculateNewGapWhenScaling(
-        changedElement,
-        element.endBinding,
-        newSize,
-      ),
-    };
-
     // `linearElement` is being moved/scaled already, just update the binding
     if (simultaneouslyUpdatedElementIds.has(element.id)) {
-      mutateElement(element, bindings, true);
+      mutateElement(
+        element,
+        { startBinding: element.startBinding, endBinding: element.endBinding },
+        true,
+      );
       return;
     }
 
@@ -776,7 +753,9 @@ export const updateBoundElements = (
           const point = updateBoundPoint(
             element,
             bindingProp,
-            bindings[bindingProp],
+            bindingProp === "startBinding"
+              ? element.startBinding
+              : element.endBinding,
             bindableElement,
             elementsMap,
           );
@@ -803,10 +782,10 @@ export const updateBoundElements = (
 
     LinearElementEditor.movePoints(element, updates, {
       ...(changedElement.id === element.startBinding?.elementId
-        ? { startBinding: bindings.startBinding }
+        ? { startBinding: element.startBinding }
         : {}),
       ...(changedElement.id === element.endBinding?.elementId
-        ? { endBinding: bindings.endBinding }
+        ? { endBinding: element.endBinding }
         : {}),
     });
 
@@ -899,7 +878,7 @@ export const bindPointToSnapToElementOutline = (
     arrow.x + localP[0],
     arrow.y + localP[1],
   );
-  const p = isRectanguloidElement(bindableElement)
+  const edgePoint = isRectanguloidElement(bindableElement)
     ? avoidRectangularCorner(bindableElement, globalP)
     : globalP;
 
@@ -912,37 +891,43 @@ export const bindPointToSnapToElementOutline = (
         center,
         pointFromVector(
           vectorScale(
-            vectorNormalize(vectorFromPoint(p, center)),
+            vectorNormalize(vectorFromPoint(edgePoint, center)),
             Math.max(bindableElement.width, bindableElement.height),
           ),
           center,
         ),
       ),
     )[0];
-    const currentDistance = pointDistance(p, center);
+    const currentDistance = pointDistance(edgePoint, center);
     const fullDistance = pointDistance(intersection, center);
-    const ratio = currentDistance / fullDistance;
+    const ratio = round(currentDistance / fullDistance);
 
     switch (true) {
       case ratio > 0.9:
-        if (currentDistance - fullDistance > FIXED_BINDING_DISTANCE) {
-          return p;
-        }
+        const adjacentPointIdx =
+          startOrEnd === "start" ? 1 : arrow.points.length - 2;
+        const adjacentPoint = pointRotateRads(
+          pointFrom(
+            arrow.x + arrow.points[adjacentPointIdx][0],
+            arrow.y + arrow.points[adjacentPointIdx][1],
+          ),
+          center,
+          arrow.angle ?? 0,
+        );
 
         return pointFromVector(
           vectorScale(
-            vectorNormalize(vectorFromPoint(p, intersection)),
-            ratio > 1 ? FIXED_BINDING_DISTANCE : -FIXED_BINDING_DISTANCE,
+            vectorNormalize(vectorFromPoint(intersection, adjacentPoint)),
+            -FIXED_BINDING_DISTANCE,
           ),
           intersection,
         );
-
       default:
-        return headingToMidBindPoint(p, bindableElement, aabb);
+        return headingToMidBindPoint(edgePoint, bindableElement, aabb);
     }
   }
 
-  return p;
+  return edgePoint;
 };
 
 const headingToMidBindPoint = (
@@ -985,10 +970,7 @@ export const avoidRectangularCorner = (
   element: ExcalidrawBindableElement,
   p: GlobalPoint,
 ): GlobalPoint => {
-  const center = pointFrom<GlobalPoint>(
-    element.x + element.width / 2,
-    element.y + element.height / 2,
-  );
+  const center = elementCenterPoint(element);
   const nonRotatedPoint = pointRotateRads(p, center, -element.angle as Radians);
 
   if (nonRotatedPoint[0] < element.x && nonRotatedPoint[1] < element.y) {
@@ -1171,7 +1153,6 @@ const updateBoundPoint = (
         linearElement,
         bindableElement,
         startOrEnd === "startBinding" ? "start" : "end",
-        elementsMap,
       ).fixedPoint;
     const globalMidPoint = pointFrom<GlobalPoint>(
       bindableElement.x + bindableElement.width / 2,
@@ -1240,27 +1221,11 @@ const updateBoundPoint = (
           adjacentPoint,
         ),
       ),
-      binding.gap,
+      FIXED_BINDING_DISTANCE,
     ).sort(
       (g, h) =>
         pointDistanceSq(g, adjacentPoint) - pointDistanceSq(h, adjacentPoint),
     );
-
-    // debugClear();
-    // debugDrawPoint(intersections[0], { color: "red", permanent: true });
-    // debugDrawLine(
-    //   lineSegment<GlobalPoint>(
-    //     adjacentPoint,
-    //     pointFromVector(
-    //       vectorScale(
-    //         vectorNormalize(vectorFromPoint(focusPointAbsolute, adjacentPoint)),
-    //         interceptorLength,
-    //       ),
-    //       adjacentPoint,
-    //     ),
-    //   ),
-    //   { permanent: true, color: "green" },
-    // );
 
     if (intersections.length > 1) {
       // The adjacent point is outside the shape (+ gap)
@@ -1285,7 +1250,6 @@ export const calculateFixedPointForElbowArrowBinding = (
   linearElement: NonDeleted<ExcalidrawElbowArrowElement>,
   hoveredElement: ExcalidrawBindableElement,
   startOrEnd: "start" | "end",
-  elementsMap: ElementsMap,
 ): { fixedPoint: FixedPoint } => {
   const bounds = [
     hoveredElement.x,
@@ -1316,28 +1280,6 @@ export const calculateFixedPointForElbowArrowBinding = (
         hoveredElement.height,
     ]),
   };
-};
-
-const maybeCalculateNewGapWhenScaling = (
-  changedElement: ExcalidrawBindableElement,
-  currentBinding: PointBinding | null | undefined,
-  newSize: { width: number; height: number } | undefined,
-): PointBinding | null | undefined => {
-  if (currentBinding == null || newSize == null) {
-    return currentBinding;
-  }
-  const { width: newWidth, height: newHeight } = newSize;
-  const { width, height } = changedElement;
-  const newGap = Math.max(
-    1,
-    Math.min(
-      maxBindingGap(changedElement, newWidth, newHeight),
-      currentBinding.gap *
-        (newWidth < newHeight ? newWidth / width : newHeight / height),
-    ),
-  );
-
-  return { ...currentBinding, gap: newGap };
 };
 
 const getElligibleElementForBindingElement = (
