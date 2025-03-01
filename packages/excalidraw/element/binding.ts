@@ -74,6 +74,7 @@ import {
 import { intersectElementWithLineSegment } from "./collision";
 import { distanceToBindableElement } from "./distance";
 import { elementCenterPoint } from "./utils";
+import { debugClear, debugDrawPoint } from "../visualdebug";
 
 export type SuggestedBinding =
   | NonDeleted<ExcalidrawBindableElement>
@@ -867,32 +868,35 @@ const getDistanceForBinding = (
 };
 
 export const bindPointToSnapToElementOutline = (
-  arrow: ExcalidrawElbowArrowElement,
+  linearElement: ExcalidrawLinearElement,
   bindableElement: ExcalidrawBindableElement | undefined,
   startOrEnd: "start" | "end",
 ): GlobalPoint => {
   const aabb = bindableElement && aabbForElement(bindableElement);
   const localP =
-    arrow.points[startOrEnd === "start" ? 0 : arrow.points.length - 1];
+    linearElement.points[
+      startOrEnd === "start" ? 0 : linearElement.points.length - 1
+    ];
   const globalP = pointFrom<GlobalPoint>(
-    arrow.x + localP[0],
-    arrow.y + localP[1],
+    linearElement.x + localP[0],
+    linearElement.y + localP[1],
   );
   const edgePoint = isRectanguloidElement(bindableElement)
     ? avoidRectangularCorner(bindableElement, globalP)
     : globalP;
+  const elbowed = isElbowArrow(linearElement);
 
   if (bindableElement && aabb) {
     const center = getCenterForBounds(aabb);
     const adjacentPointIdx =
-      startOrEnd === "start" ? 1 : arrow.points.length - 2;
+      startOrEnd === "start" ? 1 : linearElement.points.length - 2;
     const adjacentPoint = pointRotateRads(
       pointFrom<GlobalPoint>(
-        arrow.x + arrow.points[adjacentPointIdx][0],
-        arrow.y + arrow.points[adjacentPointIdx][1],
+        linearElement.x + linearElement.points[adjacentPointIdx][0],
+        linearElement.y + linearElement.points[adjacentPointIdx][1],
       ),
       center,
-      arrow.angle ?? 0,
+      linearElement.angle ?? 0,
     );
 
     const intersection = intersectElementWithLineSegment(
@@ -916,6 +920,10 @@ export const bindPointToSnapToElementOutline = (
       return edgePoint;
     }
 
+    debugClear();
+    intersection &&
+      debugDrawPoint(intersection, { permanent: true, color: "red" });
+
     const currentDistance = pointDistance(edgePoint, center);
     const fullDistance = pointDistance(intersection, center);
     const ratio = round(currentDistance / fullDistance);
@@ -930,7 +938,11 @@ export const bindPointToSnapToElementOutline = (
           intersection,
         );
       default:
-        return headingToMidBindPoint(edgePoint, bindableElement, aabb);
+        if (elbowed) {
+          return headingToMidBindPoint(edgePoint, bindableElement, aabb);
+        }
+
+        return edgePoint;
     }
   }
 
